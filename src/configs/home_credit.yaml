@@ -1,0 +1,25 @@
+dataset:
+  name: home_credit
+  root: "src/data/processed/home_credit"
+  fold_scheme: stratified
+  target_column: TARGET
+  id_column: SK_ID_CURR
+
+selectors:
+  - variance
+  - anova
+  - l1_logreg
+  - tree_importance
+  - mi
+  - mrmr
+
+models:
+  - logreg
+  - hgbt
+
+k_values: [5,10,20, 35, 50, 75, 100, 150]
+
+cv_outer_folds: 5
+cv_repeats: 1
+seed: 236040
+tracking_uri: "mlruns"

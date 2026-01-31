@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# PyCharm
+.idea/
+*.iml
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ML experiments
+mlruns/
+results/
+plots/
+src/data/tmp/
+
+# Parquet outputs
+*.parquet
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+/final_plots/
+/paper_figs_mi/
+src/data/
+src/paper_figs_mi/
+src/paper_figs_test/
+tests/
+plots.rar

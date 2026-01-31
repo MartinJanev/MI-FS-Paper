@@ -1,0 +1,25 @@
+dataset:
+  name: santander
+  root: "src/data/processed/santander"
+  fold_scheme: stratified
+  target_column: target
+  id_column: ID_code
+
+selectors:
+  - variance
+  - anova
+  - l1_logreg
+  - tree_importance
+  - mi
+  - mrmr
+
+models:
+  - logreg
+  - hgbt
+
+k_values: [5,10,20, 35, 50, 75, 100, 150]
+
+cv_outer_folds: 5
+cv_repeats: 1
+seed: 236040
+tracking_uri: "mlruns"
