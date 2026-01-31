@@ -41,3 +41,5 @@ src/paper_figs_mi/
 src/paper_figs_test/
 tests/
 plots.rar
+src/printAllFiles.sh
+src/all_contents.txt
