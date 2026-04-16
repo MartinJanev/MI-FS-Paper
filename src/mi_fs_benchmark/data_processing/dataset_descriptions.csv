@@ -1,0 +1,5 @@
+Dataset,Samples,Features,Target,Classes,Class Distribution,Majority Class %
+Arcene,500,10000,target,2,"{0: 280, 1: 220}",56.0%
+Home Credit,1537555,104,TARGET,2,"{0: 1413430, 1: 124125}",91.9%
+Ieee Cis Fraud,2952700,378,isFraud,2,"{0: 2849385, 1: 103315}",96.5%
+Santander,1000000,200,target,2,"{0: 899510, 1: 100490}",90.0%
