@@ -1,10 +1,4 @@
-# scripts/make_paper_plots_mi_based.py
-# Drop-in plotting script for aggregated CSVs.
-# Fixes:
-# 1) per-model predictive performance vs k plots (multi-panel by dataset)
-# 2) title/legend overlap (reserved top band + anchored fig.legend)
-# 3) k* LaTeX tables regenerated
-# 4) includes mRMR as MI-based selector
+"""Plotting utilities for benchmark paper figures and k* tables."""
 
 from __future__ import annotations
 
@@ -18,9 +12,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-# --------------------------
-# Paper ordering / inclusion
-# --------------------------
 DATASET_ORDER = [
     "santander",
     "home_credit",
@@ -29,7 +20,6 @@ DATASET_ORDER = [
 
 MODEL_ORDER = ["logreg", "hgbt"]
 
-# MI-based + Standard selectors
 SELECTOR_ORDER = [
     "variance",
     "anova",
@@ -52,7 +42,6 @@ SELECTOR_LABELS = {
     "shap": "SHAP",
 }
 
-# Family-level groupings and colors for MI-vs-standard plots.
 FAMILY_DEFS: Dict[str, List[str]] = {
     "mi": ["mi", "mrmr"],
     "standard": ["variance", "anova", "l1_logreg", "tree_importance", "boruta", "shap"],
@@ -130,7 +119,6 @@ def _infer_columns(df: pd.DataFrame) -> Cols:
     return Cols(dataset=dataset, model=model, selector=selector, k=k, metric_mean=mean, metric_std=std, metric_ci_lo=ci_lo, metric_ci_hi=ci_hi)
 
 def _drop_nan_metric(df: pd.DataFrame, metric_col: str) -> pd.DataFrame:
-    # Remove rows where the plotted metric is NaN (these break lines into invisible fragments)
     return df.dropna(subset=[metric_col]).copy()
 
 
@@ -211,14 +199,12 @@ def _compute_ci_band(df: pd.DataFrame, cols: Cols, z: float = 1.96):
     if np.all(np.isnan(y)):
         return y, None, None
 
-    # Prefer explicit CI columns only if they contain at least some non-NaN values
     if cols.metric_ci_lo and cols.metric_ci_hi:
         lo = pd.to_numeric(df[cols.metric_ci_lo], errors="coerce").to_numpy(dtype=float)
         hi = pd.to_numeric(df[cols.metric_ci_hi], errors="coerce").to_numpy(dtype=float)
         if not (np.all(np.isnan(lo)) or np.all(np.isnan(hi))):
             return y, lo, hi
 
-    # Otherwise fall back to std if available and non-NaN
     if cols.metric_std:
         sd = pd.to_numeric(df[cols.metric_std], errors="coerce").to_numpy(dtype=float)
         if not np.all(np.isnan(sd)):
@@ -296,32 +282,13 @@ def _combined_ylim(
             span = min_span
         if span <= 0:
             span = 1.0
-        # Slightly larger top pad so high-performing curves do not touch the boundary.
         low_pad = 0.02 * span
         high_pad = 0.06 * span
         return (y_min - low_pad, y_max + high_pad)
     return default_ylim
 
 
-
-def _reserve_top_band(fig: plt.Figure, top: float = 0.90) -> None:
-    # Leaves space for suptitle + legend so they never collide.
-    fig.subplots_adjust(top=top)
-
-
-def _add_suptitle_and_legend(fig: plt.Figure, handles: List, labels: List[str]) -> None:
-    fig.legend(
-        handles,
-        labels,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 0.90),
-        ncol=min(len(labels), 6),
-        frameon=False,
-    )
-
-
 def _add_bottom_legend(fig: plt.Figure, handles: List, labels: List[str], y: float = 0.02) -> None:
-    # Shared legend just under the axes area (tight, minimal gap)
     if not handles:
         return
     fig.legend(
@@ -339,7 +306,6 @@ def _add_bottom_legend(fig: plt.Figure, handles: List, labels: List[str], y: flo
 
 
 def _set_local_ylim(ax: plt.Axes, y_min: float, y_max: float, pad: float = 0.02, clip01: bool = False) -> None:
-    # Dynamically scale per-axis limits to the min/max of plotted values with small padding.
     if not np.isfinite(y_min) or not np.isfinite(y_max):
         return
     if y_max - y_min < 1e-6:
@@ -351,21 +317,6 @@ def _set_local_ylim(ax: plt.Axes, y_min: float, y_max: float, pad: float = 0.02,
         y_min = max(0.0, y_min)
         y_max = min(1.0, y_max)
     ax.set_ylim(y_min, y_max)
-
-def _pad_y_axes(axes, tick_pad: int = 12, label_pad: int = 16) -> None:
-    axes_iter = axes.flat if hasattr(axes, "flat") else axes
-    for ax in axes_iter:
-        ax.tick_params(axis="y", pad=tick_pad)
-        ax.yaxis.labelpad = label_pad
-
-
-def _set_dynamic_ylim(ax, y_min: float, y_max: float, pad_ratio: float = 0.05) -> None:
-    if not np.isfinite(y_min) or not np.isfinite(y_max):
-        return
-    span = y_max - y_min
-    pad = span * pad_ratio if span > 0 else max(abs(y_max), 1.0) * pad_ratio
-    ax.set_ylim(y_min - pad, y_max + pad)
-
 
 def plot_performance_vs_k(perf_df: pd.DataFrame, cols: Cols, model: str, outdir: Path, metric_name: str = "ROC-AUC") -> Path:
     sub = perf_df[perf_df[cols.model] == model]
@@ -480,7 +431,6 @@ def make_kstar_table(perf_df: pd.DataFrame, perf_cols: Cols, stab_df: pd.DataFra
     perf_m = perf_df[perf_df[perf_cols.model] == model]
     stab_m = stab_df[stab_df[stab_cols.model] == model]
     
-    # Load statistical significance results if available
     sig_df = None
     sig_path = Path("../../../src/results/aggregated/combined_statistical_significance.csv")
     if sig_path.exists():
@@ -501,7 +451,6 @@ def make_kstar_table(perf_df: pd.DataFrame, perf_cols: Cols, stab_df: pd.DataFra
             kstar = int(best[perf_cols.k])
             auc = float(best[perf_cols.metric_mean])
             
-            # Extract confidence intervals if available
             ci_lower = None
             ci_upper = None
             if perf_cols.metric_ci_lo and perf_cols.metric_ci_lo in best.index and pd.notna(best[perf_cols.metric_ci_lo]):
@@ -516,7 +465,6 @@ def make_kstar_table(perf_df: pd.DataFrame, perf_cols: Cols, stab_df: pd.DataFra
             ]
             stab = float(s_stab[stab_cols.metric_mean].iloc[0]) if not s_stab.empty else np.nan
             
-            # Check significance
             is_significant = False
             pval_str = ""
             if sig_df is not None:
@@ -552,7 +500,6 @@ def make_kstar_table(perf_df: pd.DataFrame, perf_cols: Cols, stab_df: pd.DataFra
             
             auc_s = f"{auc:.3f}"
             if ci_lower is not None and ci_upper is not None:
-                # Assuming symmetric CI for display, or show standard error equivalent
                 err = (ci_upper - ci_lower) / 2
                 auc_s = f"${auc:.3f} \\pm {err:.3f}$"
             
@@ -586,7 +533,6 @@ def plot_performance_combined(
     if perf_df.empty:
         return outdir / "fig_perf_tabular_combined.png"
 
-    # rows=datasets, cols=models
     nrows, ncols = len(DATASET_ORDER), len(MODEL_ORDER)
     fig, axes = plt.subplots(nrows, ncols, figsize=(4.2 * ncols, 3.4 * nrows), sharey=False)
     fig.subplots_adjust(top=0.92, bottom=0.12, hspace=0.35, wspace=0.25)
@@ -596,7 +542,6 @@ def plot_performance_combined(
 
     for i, ds in enumerate(DATASET_ORDER):
         ds_df = perf_df[perf_df[cols.dataset] == ds]
-        # per-dataset ylim across models
         vals: List[float] = []
         for model in MODEL_ORDER:
             s = ds_df[ds_df[cols.model] == model]
@@ -1091,10 +1036,8 @@ def main() -> None:
             outpath=outdir / f"table_best_at_kstar_{m}_tabular.tex",
         )
 
-    # Combined performance grid across models x datasets
     plot_performance_combined(perf, perf_cols, outdir, dataset_feature_caps=dataset_feature_caps)
 
-    # Combined accuracy grid across models x datasets (all selectors)
     plot_metric_combined_all_selectors(
         perf,
         perf_cols,
@@ -1108,7 +1051,6 @@ def main() -> None:
         min_ylim_span=0.0001,
     )
 
-    # Family-level MI vs standard plot (combined across selectors)
     if "accuracy_mean" in perf.columns:
         plot_family_metric_combined(
             perf,
@@ -1120,10 +1062,8 @@ def main() -> None:
             dataset_feature_caps=dataset_feature_caps,
         )
 
-    # Additional combined CI plots for available metrics (f1, log-loss, stability_jaccard, ...)
     for metric_prefix in requested_ci_metrics:
         if metric_prefix == "accuracy":
-            # Already produced above with stable filename used in manuscript workflow.
             continue
         if f"{metric_prefix}_mean" not in perf.columns:
             continue
@@ -1139,7 +1079,6 @@ def main() -> None:
             per_subplot_ylim=(metric_prefix == "f1"),
         )
 
-    # Reviewer-focused additions based on per-selector k* rows
     if not table_source_df.empty:
         kstar_rows = _extract_kstar_rows_combined(table_source_df)
         plot_efficiency_frontier_kstar(kstar_rows, outdir)

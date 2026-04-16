@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import numpy as np
 
-# Require PyTorch with CUDA
 try:
     import torch
     if not torch.cuda.is_available():
@@ -25,11 +24,8 @@ try:
     TORCH_AVAILABLE = True
     CUDA_AVAILABLE = True
 
-    # Optimize PyTorch for maximum GPU utilization
-    # Enable TF32 for faster matrix operations on Ampere+ GPUs
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    # Set benchmarking mode for optimal kernel selection
     torch.backends.cudnn.benchmark = True
 except ImportError as e:
     raise ImportError(
@@ -92,8 +88,6 @@ def get_gpu_info() -> dict:
         "compute_capability": f"{props.major}.{props.minor}",
     }
 
-    # Estimate CUDA cores based on architecture
-    # Note: This is an approximation based on common GPU architectures
     sm_count = props.multi_processor_count
     cores_per_sm = {
         (7, 5): 64,  # Turing (RTX 20xx)
@@ -142,7 +136,6 @@ def compute_mi_gpu_correlation(
         logger = logging.getLogger(__name__)
         logger.info(f"🎮 Computing MI on GPU: {dev} ({X.shape[1]} features, {X.shape[0]} samples)")
 
-    # Convert to torch tensors and move to device
     X_tensor = torch.from_numpy(X).float().to(dev)
     y_tensor = torch.from_numpy(y).float().to(dev)
 
@@ -152,34 +145,24 @@ def compute_mi_gpu_correlation(
         logger = logging.getLogger(__name__)
         logger.info(f"   GPU Memory: {mem_used:.1f} MB used")
 
-    # Convert to torch tensors and move to device
-    X_tensor = torch.from_numpy(X).float().to(dev)
-    y_tensor = torch.from_numpy(y).float().to(dev)
-
-    # Standardize
     X_std = (X_tensor - X_tensor.mean(dim=0)) / (X_tensor.std(dim=0) + 1e-10)
     y_std = (y_tensor - y_tensor.mean()) / (y_tensor.std() + 1e-10)
 
-    # Compute correlations
     n = X_tensor.shape[0]
     correlations = (X_std.T @ y_std) / (n - 1)
 
-    # MI approximation: -0.5 * log(1 - ρ²)
-    # Clamp to avoid log(0)
     rho_squared = torch.clamp(correlations ** 2, 0, 0.9999)
     mi_approx = -0.5 * torch.log(1 - rho_squared)
 
-    # Replace NaN/inf with 0
     mi_approx = torch.nan_to_num(mi_approx, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # Move back to CPU and convert to numpy
     return mi_approx.cpu().numpy()
 
 
 def compute_pairwise_mi_gpu(
     X: np.ndarray,
     device: str | None = None,
-    batch_size: int = 500,  # Increased from 100 for better GPU utilization
+    batch_size: int = 500,
     verbose: bool = False,
 ) -> np.ndarray:
     """
@@ -219,23 +202,17 @@ def compute_pairwise_mi_gpu(
         logger.info(f"🎮 Computing pairwise MI on GPU: {dev} ({n_features}×{n_features} matrix)")
         logger.info(f"   Batch size: {batch_size} features/batch")
 
-    # Convert to torch and standardize
     X_tensor = torch.from_numpy(X).float().to(dev)
     X_std = (X_tensor - X_tensor.mean(dim=0)) / (X_tensor.std(dim=0) + 1e-10)
 
-    # Compute correlation matrix in batches
-    # Using GPU, this saturates all CUDA cores automatically
     mi_matrix = torch.zeros((n_features, n_features), device=dev)
 
     for i in range(0, n_features, batch_size):
         end_i = min(i + batch_size, n_features)
         batch = X_std[:, i:end_i]
 
-        # Correlations between batch and all features
-        # This @ operation uses cuBLAS which utilizes all GPU cores
         correlations = (batch.T @ X_std) / (n_samples - 1)
 
-        # MI approximation (element-wise ops, also parallelized)
         rho_squared = torch.clamp(correlations ** 2, 0, 0.9999)
         mi_batch = -0.5 * torch.log(1 - rho_squared)
         mi_batch = torch.nan_to_num(mi_batch, nan=0.0, posinf=0.0, neginf=0.0)
