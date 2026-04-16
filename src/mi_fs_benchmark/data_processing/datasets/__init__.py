@@ -5,7 +5,6 @@ from pathlib import Path
 
 from .base import BaseDataset
 from .home_credit import HomeCreditDataset
-from .nfl_bdb_2026 import NFLBDB2026Dataset
 from .santander import SantanderDataset
 from .arcene import ArceneDataset
 from .ieee_cis_fraud import IEEECISFraudDataset
@@ -35,7 +34,6 @@ def create_dataset(name: str, root: str | Path | None, target_column: str) -> Ba
     mapping: dict[str, type[BaseDataset]] = {
         "santander": SantanderDataset,
         "home_credit": HomeCreditDataset,
-        "nfl_bdb_2026": NFLBDB2026Dataset,
         "arcene": ArceneDataset,
         "ieee_cis_fraud": IEEECISFraudDataset,
     }

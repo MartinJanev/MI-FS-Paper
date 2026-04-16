@@ -12,6 +12,9 @@ SelectorName = Literal[
     "anova",
     "variance",
     "l1_logreg",
+    "tree_importance",
+    "boruta",
+    "shap"
 ]
 
 ModelName = Literal["logreg", "hgbt"]
@@ -66,6 +69,9 @@ class ExperimentConfig:
     # Optional caps to keep “messy” datasets lightweight
     max_rows_for_selector_fit: Optional[int] = None
     max_features_after_encoding: Optional[int] = None
+    # Selector fit progress heartbeat (simple periodic text logs)
+    selector_fit_progress_enabled: bool = True
+    selector_fit_progress_interval_sec: int = 50
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -129,4 +135,6 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         tracking_uri=raw.get("tracking_uri"),
         max_rows_for_selector_fit=raw.get("max_rows_for_selector_fit"),
         max_features_after_encoding=raw.get("max_features_after_encoding"),
+        selector_fit_progress_enabled=bool(raw.get("selector_fit_progress_enabled", True)),
+        selector_fit_progress_interval_sec=int(raw.get("selector_fit_progress_interval_sec", 10)),
     )

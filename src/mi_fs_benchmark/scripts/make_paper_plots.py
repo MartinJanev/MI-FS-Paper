@@ -32,12 +32,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
-# try:
-#     from PyPDF2 import PdfMerger
-# except Exception:  # pragma: no cover
-#     PdfMerger = None  # type: ignore
-#
+from matplotlib.image import AxesImage
 
 # ----------------------------- Canonical names -----------------------------
 
@@ -70,8 +65,34 @@ MODEL_LABELS: Dict[str, str] = {
     "lgbm": "lgbm",
 }
 
+# Color mapping for family-level plots
+FAMILY_COLORS: Dict[str, str] = {
+    "mi": "#1f77b4",       # blue
+    "standard": "#ff7f0e", # orange
+}
+# Distinct colors when plotting both models together
+FAMILY_MODEL_COLORS: Dict[Tuple[str, str], str] = {
+    ("mi", "logreg"): "#1f77b4",
+    ("mi", "hgbt"): "#145a86",
+    ("standard", "logreg"): "#ff7f0e",
+    ("standard", "hgbt"): "#c85a00",
+}
+
+
 # Correlation methods allowed for ranking heatmaps
 RANK_METHODS = {"spearman", "kendall"}
+
+
+def _save_figure(fig: plt.Figure, out_pdf: Optional[Path], out_png: Optional[Path]) -> None:
+    """Save figure to requested output formats, creating parent directories as needed."""
+    target = out_png or out_pdf
+    if target is None:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if out_pdf is not None:
+        fig.savefig(out_pdf, bbox_inches="tight")
+    if out_png is not None:
+        fig.savefig(out_png, dpi=300, bbox_inches="tight")
 
 
 # ----------------------------- Loading helpers -----------------------------
@@ -206,9 +227,7 @@ def _panel_1x3(
     if handles:
         fig.legend(handles, labels, loc="upper center", ncol=min(5, len(labels)), frameon=False, bbox_to_anchor=(0.5, 1.12))
 
-    out_pdf.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_pdf, bbox_inches="tight")
-    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    _save_figure(fig, out_pdf, out_png)
     plt.close(fig)
 
 
@@ -290,9 +309,7 @@ def _panel_models_datasets(
     if handles_ref:
         fig.legend(handles_ref, labels_ref, loc="upper center", ncol=min(6, len(labels_ref)), frameon=False, bbox_to_anchor=(0.5, 1.02))
 
-    out_pdf.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_pdf, bbox_inches="tight")
-    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    _save_figure(fig, out_pdf, out_png)
     plt.close(fig)
 
 
@@ -356,11 +373,11 @@ def _family_panel(
         x = ss["k"].to_numpy(dtype=float)
         y = ss[y_mean].to_numpy(dtype=float)
         label = fam_name.upper() if fam_name.lower() == "mi" else fam_name.capitalize()
-        ax.plot(x, y, label=label, linewidth=1.8)
+        ax.plot(x, y, label=label, linewidth=1.8, color=FAMILY_COLORS.get(fam_name))
         lo = ss[y_lo].to_numpy(dtype=float)
         hi = ss[y_hi].to_numpy(dtype=float)
         if np.isfinite(lo).any() and np.isfinite(hi).any() and np.nanmax(hi - lo) > 0:
-            ax.fill_between(x, lo, hi, alpha=0.15)
+            ax.fill_between(x, lo, hi, alpha=0.15, color=FAMILY_COLORS.get(fam_name))
 
     ax.set_xlabel("Selected features k")
     ax.set_ylabel(y_label)
@@ -368,9 +385,7 @@ def _family_panel(
     ax.grid(True, alpha=0.25)
     ax.legend(loc="best", frameon=False)
 
-    out_pdf.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_pdf, bbox_inches="tight")
-    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    _save_figure(fig, out_pdf, out_png)
     plt.close(fig)
 
 
@@ -440,11 +455,12 @@ def _family_panel_combined(
             x = ss["k"].to_numpy(dtype=float)
             y = ss[y_mean].to_numpy(dtype=float)
             label = fam_name.upper() if fam_name.lower() == "mi" else fam_name.capitalize()
-            ax.plot(x, y, label=label, linewidth=1.8)
+            color = FAMILY_COLORS.get(fam_name)
+            ax.plot(x, y, label=label, linewidth=1.8, color=color)
             lo = ss[y_lo].to_numpy(dtype=float)
             hi = ss[y_hi].to_numpy(dtype=float)
             if np.isfinite(lo).any() and np.isfinite(hi).any() and np.nanmax(hi - lo) > 0:
-                ax.fill_between(x, lo, hi, alpha=0.15)
+                ax.fill_between(x, lo, hi, alpha=0.15, color=color)
 
         ax.set_xlabel("Selected features k")
         ax.set_ylabel(y_label)
@@ -452,9 +468,101 @@ def _family_panel_combined(
         ax.grid(True, alpha=0.25)
         ax.legend(loc="best", frameon=False)
 
-    out_pdf.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_pdf, bbox_inches="tight")
-    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    _save_figure(fig, out_pdf, out_png)
+    plt.close(fig)
+
+
+def _family_panel_combined_dual_metric(
+    df: pd.DataFrame,
+    *,
+    families: Dict[str, Sequence[str]],
+    models: Sequence[str],
+    metrics: Sequence[Tuple[str, str, str]],
+    y_labels: Sequence[str],
+    out_pdf: Path,
+    out_png: Path,
+    ylim_defaults: Sequence[Tuple[float, float]],
+) -> None:
+    """Single figure that stacks both combined family plots (e.g., accuracy & ROC-AUC)."""
+    if not models or not metrics:
+        return
+
+    nrows, ncols = len(metrics), len(models)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.5 * ncols, 3.2 * nrows), constrained_layout=True)
+    axes_arr = np.atleast_2d(axes)
+    handles_ref: List = []
+    labels_ref: List[str] = []
+
+    for r, (y_mean, y_lo, y_hi) in enumerate(metrics):
+        for c, model in enumerate(models):
+            ax = axes_arr[r, c]
+            sub = df[df["model"] == model].copy()
+            if sub.empty:
+                ax.axis("off")
+                continue
+
+            agg_rows = []
+            for fam_name, sel_list in families.items():
+                fam_df = sub[sub["selector"].isin(sel_list)]
+                if fam_df.empty:
+                    continue
+                for k in sorted(fam_df["k"].dropna().unique()):
+                    kdf = fam_df[fam_df["k"] == k]
+                    if kdf.empty:
+                        continue
+                    mean_val = kdf[y_mean].mean()
+                    lo_val = kdf[y_lo].min() if y_lo in kdf else np.nan
+                    hi_val = kdf[y_hi].max() if y_hi in kdf else np.nan
+                    agg_rows.append({"family": fam_name, "k": k, y_mean: mean_val, y_lo: lo_val, y_hi: hi_val})
+            agg = pd.DataFrame(agg_rows)
+            if agg.empty:
+                ax.axis("off")
+                continue
+
+            vals: List[float] = []
+            for _, row in agg.iterrows():
+                vals.append(row[y_mean])
+                if np.isfinite(row[y_lo]):
+                    vals.append(row[y_lo])
+                if np.isfinite(row[y_hi]):
+                    vals.append(row[y_hi])
+            if vals and np.isfinite(vals).any():
+                y_min = float(np.nanmin(vals))
+                y_max = float(np.nanmax(vals))
+                pad = 0.02 * (y_max - y_min if y_max > y_min else 1.0)
+                ylim = (y_min - pad, y_max + pad)
+            else:
+                ylim = ylim_defaults[r]
+
+            for fam_name, sel_list in families.items():
+                ss = agg[agg["family"] == fam_name].sort_values("k")
+                if ss.empty:
+                    continue
+                x = ss["k"].to_numpy(dtype=float)
+                y = ss[y_mean].to_numpy(dtype=float)
+                label = fam_name.upper() if fam_name.lower() == "mi" else fam_name.capitalize()
+                color = FAMILY_COLORS.get(fam_name)
+                line, = ax.plot(x, y, label=label, linewidth=1.8, color=color)
+                lo = ss[y_lo].to_numpy(dtype=float)
+                hi = ss[y_hi].to_numpy(dtype=float)
+                if np.isfinite(lo).any() and np.isfinite(hi).any() and np.nanmax(hi - lo) > 0:
+                    ax.fill_between(x, lo, hi, alpha=0.15, color=color)
+                if r == 0 and c == 0:
+                    handles_ref.append(line)
+                    labels_ref.append(label)
+
+            if r == nrows - 1:
+                ax.set_xlabel("Selected features k")
+            if c == 0:
+                ax.set_ylabel(y_labels[r])
+            ax.set_ylim(*ylim)
+            ax.grid(True, alpha=0.25)
+            ax.set_title(MODEL_LABELS.get(model, model), fontsize=10)
+
+    if handles_ref:
+        fig.legend(handles_ref, labels_ref, loc="upper center", ncol=min(4, len(handles_ref)), frameon=False, bbox_to_anchor=(0.5, 1.02))
+
+    _save_figure(fig, out_pdf, out_png)
     plt.close(fig)
 
 
@@ -479,7 +587,7 @@ def _compute_rank_corr(
     return corr.reindex(index=selectors, columns=selectors)
 
 
-def _draw_corr_heatmap(ax: plt.Axes, corr: pd.DataFrame, selectors: Sequence[str], title: str, vmin: float, vmax: float) -> None:
+def _draw_corr_heatmap(ax: plt.Axes, corr: pd.DataFrame, selectors: Sequence[str], title: str, vmin: float, vmax: float) -> AxesImage:
     im = ax.imshow(corr, vmin=vmin, vmax=vmax, cmap="coolwarm")
     ax.set_xticks(range(len(selectors)))
     ax.set_xticklabels([SELECTOR_LABELS.get(s, s) for s in selectors], rotation=45, ha="right")
@@ -527,9 +635,7 @@ def _rank_correlation_heatmap_combined(
     if im is not None:
         fig.colorbar(im, ax=axes_arr, fraction=0.046, pad=0.04)
 
-    out_pdf.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_pdf, bbox_inches="tight")
-    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    _save_figure(fig, out_pdf, out_png)
     plt.close(fig)
 
 
@@ -561,26 +667,97 @@ def _rank_correlation_heatmap(
     )
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    if out_pdf is not None and out_png is not None:
-        out_pdf.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out_pdf, bbox_inches="tight")
-        fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    _save_figure(fig, out_pdf, out_png)
     plt.close(fig)
 
 
-# def _concat_pdfs(in_pdfs: Sequence[Path], out_pdf: Path) -> None:
-#     if PdfMerger is None:
-#         return
-#     merger = PdfMerger()
-#     for p in in_pdfs:
-#         if p.exists():
-#             merger.append(str(p))
-#     out_pdf.parent.mkdir(parents=True, exist_ok=True)
-#     with open(out_pdf, "wb") as f:
-#         merger.write(f)
 
 
 # --------------------------------- Main -----------------------------------
+
+def _family_panel_all_models_single(summary_df, families, models, y_mean, y_lo, y_hi, y_label, out_pdf, out_png, ylim_default):
+    """One plot overlaying (family, model) lines across k for all models."""
+    sub = summary_df[summary_df["model"].isin(models)].copy()
+    if sub.empty:
+        return
+
+    agg_rows = []
+    for fam_name, sel_list in families.items():
+        fam_df = sub[sub["selector"].isin(sel_list)]
+        if fam_df.empty:
+            continue
+        for model in models:
+            mdf = fam_df[fam_df["model"] == model]
+            if mdf.empty:
+                continue
+            for k in sorted(mdf["k"].dropna().unique()):
+                kdf = mdf[mdf["k"] == k]
+                agg_rows.append({
+                    "family": fam_name,
+                    "model": model,
+                    "k": k,
+                    y_mean: kdf[y_mean].mean(),
+                    y_lo: kdf[y_lo].min() if y_lo in kdf else np.nan,
+                    y_hi: kdf[y_hi].max() if y_hi in kdf else np.nan,
+                })
+
+    agg = pd.DataFrame(agg_rows)
+    if agg.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(4.5, 3.0), constrained_layout=True)
+
+    vals: List[float] = []
+    for _, row in agg.iterrows():
+        vals.append(row[y_mean])
+        if np.isfinite(row[y_lo]):
+            vals.append(row[y_lo])
+        if np.isfinite(row[y_hi]):
+            vals.append(row[y_hi])
+    if vals and np.isfinite(vals).any():
+        y_min = float(np.nanmin(vals))
+        y_max = float(np.nanmax(vals))
+        span = (y_max - y_min) if y_max > y_min else 1.0
+        pad = span * 0.009  # Increased padding to spread lines more
+        ylim = (max(0.88, y_min - pad), min(1.0, y_max + pad))
+    else:
+        ylim = ylim_default
+
+    handles: List = []
+    labels: List[str] = []
+    for fam_name, sel_list in families.items():
+        for model in models:
+            ss = agg[(agg["family"] == fam_name) & (agg["model"] == model)].sort_values("k")
+            if ss.empty:
+                continue
+            x = ss["k"].to_numpy(dtype=float)
+            y = ss[y_mean].to_numpy(dtype=float)
+            label = f"{fam_name.upper() if fam_name.lower()== 'mi' else fam_name.capitalize()} — {MODEL_LABELS.get(model, model)}"
+            color = FAMILY_MODEL_COLORS.get((fam_name, model), FAMILY_COLORS.get(fam_name))
+            line, = ax.plot(x, y, label=label, linewidth=1.8, color=color)
+            # No shaded CI band
+            handles.append(line)
+            labels.append(label)
+
+    ax.set_xlabel("Selected features k")
+    ax.set_ylabel(y_label)
+    ax.set_ylim(*ylim)
+    ax.grid(True, alpha=0.25)
+    if handles:
+        ax.legend(
+            handles,
+            labels,
+            loc="upper left",
+            bbox_to_anchor=(0.0, 1.02),
+            frameon=False,
+            ncol=2,
+            columnspacing=1.2,
+            handletextpad=0.6,
+        )
+
+    _save_figure(fig, out_pdf, out_png)
+    plt.close(fig)
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -708,6 +885,43 @@ def main() -> None:
         ylim_default=(0.5, 1.0),
     )
     generated.append(fam_auc_comb_pdf)
+
+    # Single-panel family accuracy overlaying both models
+    fam_acc_one_pdf = outdir / "fig_family_accuracy_all_models.pdf"
+    fam_acc_one_png = outdir / "fig_family_accuracy_all_models.png"
+    _family_panel_all_models_single(
+        summary_df,
+        families=FAMILY_DEFS,
+        models=models,
+        y_mean="accuracy_mean",
+        y_lo="accuracy_ci_lower" if "accuracy_ci_lower" in summary_df.columns else "accuracy_mean",
+        y_hi="accuracy_ci_upper" if "accuracy_ci_upper" in summary_df.columns else "accuracy_mean",
+        y_label="Accuracy (mean ± 95% CI)",
+        out_pdf=fam_acc_one_pdf,
+        out_png=fam_acc_one_png,
+        ylim_default=(0.92, 0.95),
+    )
+    generated.append(fam_acc_one_pdf)
+
+    # Dual-metric combined family figure (accuracy + ROC-AUC)
+    acc_lo = "accuracy_ci_lower" if "accuracy_ci_lower" in summary_df.columns else "accuracy_mean"
+    acc_hi = "accuracy_ci_upper" if "accuracy_ci_upper" in summary_df.columns else "accuracy_mean"
+    fam_dual_pdf = outdir / "fig_family_acc_roc_auc_combined_dual.pdf"
+    fam_dual_png = outdir / "fig_family_acc_roc_auc_combined_dual.png"
+    _family_panel_combined_dual_metric(
+        summary_df,
+        families=FAMILY_DEFS,
+        models=models,
+        metrics=[
+            ("accuracy_mean", acc_lo, acc_hi),
+            ("roc_auc_mean", "roc_auc_ci_lower", "roc_auc_ci_upper"),
+        ],
+        y_labels=["Accuracy (mean ± 95% CI)", "ROC-AUC (mean ± 95% CI)"],
+        out_pdf=fam_dual_pdf,
+        out_png=fam_dual_png,
+        ylim_defaults=[(0.5, 1.0), (0.5, 1.0)],
+    )
+    generated.append(fam_dual_pdf)
 
     for model in models:
         # ROC-AUC

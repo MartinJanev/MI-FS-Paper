@@ -7,25 +7,24 @@ dataset:
 
 selectors:
   - variance
-  - anova
-  - l1_logreg
-  - tree_importance
-  - mi
-  - mrmr
+    - anova
+    - l1_logreg
+    - tree_importance
+    - mi
+    - mrmr
+  - boruta
+  - shap
 
 models:
   - logreg
   - hgbt
 
-k_values: [5,10,20, 35, 50, 75, 100, 150]
+k_values: [ 5,10,20, 35, 50, 75, 100, 150 ]
 
 cv_outer_folds: 5
 cv_repeats: 1
 seed: 236040
 tracking_uri: "mlruns"
 
-# Optional confirmatory dataset; caps added to control preprocessing complexity
-# max_rows_for_selector_fit: subsample rows before selector fit
-# max_features_after_encoding: cap feature expansion for categoricals
-max_rows_for_selector_fit: 200000
+max_rows_for_selector_fit: 100000
 max_features_after_encoding: 500

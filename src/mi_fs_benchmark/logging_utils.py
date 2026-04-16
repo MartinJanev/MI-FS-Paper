@@ -18,7 +18,7 @@ class TqdmLoggingHandler(logging.Handler):
             self.handleError(record)
 
 
-def setup_logging(level: int = logging.INFO, use_tqdm: bool = True) -> None:
+def setup_logging(level: int = logging.INFO, use_tqdm: bool = True, concise: bool = True) -> None:
     """
     Configure global logging for scripts and library code.
 
@@ -28,6 +28,8 @@ def setup_logging(level: int = logging.INFO, use_tqdm: bool = True) -> None:
         Logging level, e.g. logging.INFO or logging.DEBUG.
     use_tqdm:
         If True, use TqdmLoggingHandler to avoid interfering with progress bars.
+    concise:
+        If True, use a compact log format focused on message content.
     """
     # Remove any existing handlers
     root_logger = logging.getLogger()
@@ -39,10 +41,13 @@ def setup_logging(level: int = logging.INFO, use_tqdm: bool = True) -> None:
     else:
         handler = logging.StreamHandler(sys.stderr)
 
-    formatter = logging.Formatter(
-        fmt="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    if concise:
+        formatter = logging.Formatter(fmt="%(levelname)s: %(message)s")
+    else:
+        formatter = logging.Formatter(
+            fmt="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
     handler.setFormatter(formatter)
 
     root_logger.addHandler(handler)

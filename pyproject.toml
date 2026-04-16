@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mi-fs-benchmark"
-version = "0.1.0"
+version = "0.3.0"
 description = "Benchmarking mutual-information-based feature selection and baselines on large tabular datasets."
 authors = [
   { name = "Martin Janev", email = "236040@students.finki.ukim.mk" }
@@ -22,6 +22,8 @@ dependencies = [
   "lightgbm>=4.1",
   "xgboost>=2.0",
   "tqdm>=4.67",
+  "boruta>=0.3",
+  "shap>=0.42",
 ]
 
 [project.optional-dependencies]

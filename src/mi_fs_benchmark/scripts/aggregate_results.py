@@ -25,11 +25,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
 
 import argparse
-from typing import List
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
 from scipy import stats
+
+from mi_fs_benchmark.experiment.eval.metrics import compute_statistical_significance
 
 from mi_fs_benchmark.logging_utils import get_logger, setup_logging
 
@@ -45,8 +47,24 @@ def parse_args():
     parser.add_argument(
         "--dataset",
         type=str,
-        required=True,
-        help="Dataset name (e.g., santander_short, arcene_quick)",
+        default=None,
+        help="Single dataset name (legacy mode, e.g., santander_short)",
+    )
+    parser.add_argument(
+        "--datasets",
+        type=str,
+        default=None,
+        help="Comma-separated datasets to aggregate (e.g., santander,home_credit,ieee_cis_fraud)",
+    )
+    parser.add_argument(
+        "--all-datasets",
+        action="store_true",
+        help="Auto-discover datasets from raw files and aggregate all of them",
+    )
+    parser.add_argument(
+        "--combine-only",
+        action="store_true",
+        help="Skip per-dataset aggregation and only build combined CSV outputs from existing aggregated files",
     )
     parser.add_argument(
         "--input-dir",
@@ -291,6 +309,289 @@ def load_raw_results(input_dir: Path, dataset: str) -> pd.DataFrame:
     return combined
 
 
+def _discover_datasets_from_raw(input_dir: Path) -> list[str]:
+    """Infer dataset names from raw file patterns."""
+    discovered: set[str] = set()
+
+    for f in input_dir.glob("*__run*__seed*.csv"):
+        name = f.name
+        marker = "__run"
+        if marker in name:
+            discovered.add(name.split(marker, 1)[0])
+
+    for f in input_dir.glob("*_seed*.csv"):
+        name = f.name
+        marker = "_seed"
+        if marker in name:
+            discovered.add(name.split(marker, 1)[0])
+
+    return sorted(discovered)
+
+
+def _resolve_dataset_list(args: argparse.Namespace, input_dir: Path) -> list[str]:
+    datasets: list[str] = []
+
+    if args.datasets:
+        datasets.extend([d.strip() for d in args.datasets.split(",") if d.strip()])
+
+    if args.dataset:
+        datasets.append(args.dataset.strip())
+
+    if args.all_datasets:
+        datasets.extend(_discover_datasets_from_raw(input_dir))
+
+    # preserve order while removing duplicates
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for d in datasets:
+        if d not in seen:
+            uniq.append(d)
+            seen.add(d)
+    return uniq
+
+
+def _infer_dataset(name: str) -> str:
+    if name.endswith("_statistical_significance.csv"):
+        return name[: -len("_statistical_significance.csv")]
+    if name.endswith("_stability_summary.csv"):
+        return name[: -len("_stability_summary.csv")]
+    if name.endswith("_summary.csv"):
+        return name[: -len("_summary.csv")]
+    return Path(name).stem
+
+
+def _ensure_dataset_column(df: pd.DataFrame, dataset: str) -> pd.DataFrame:
+    out = df.copy()
+    if "dataset" not in out.columns:
+        out["dataset"] = dataset
+    else:
+        out["dataset"] = out["dataset"].fillna(dataset).astype(str)
+    return out
+
+
+def _require_columns(df: pd.DataFrame, required: Sequence[str], file_path: Path) -> None:
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns {missing} in {file_path}")
+
+
+def _collect_per_dataset_files(output_dir: Path, suffix: str, datasets: Sequence[str] | None = None) -> list[Path]:
+    if datasets:
+        files: list[Path] = []
+        for ds in datasets:
+            p = output_dir / f"{ds}{suffix}"
+            if p.exists():
+                files.append(p)
+            else:
+                logger.warning(f"Expected file not found for dataset '{ds}': {p.name}")
+        return files
+
+    return sorted(
+        p
+        for p in output_dir.glob(f"*{suffix}")
+        if not p.name.startswith("combined_")
+    )
+
+
+def _combine_and_write(
+    files: Sequence[Path],
+    out_path: Path,
+    required_cols: Sequence[str],
+) -> pd.DataFrame:
+    if not files:
+        logger.warning(f"No files found for {out_path.name}; skipping")
+        return pd.DataFrame()
+
+    frames: list[pd.DataFrame] = []
+    for f in files:
+        df = pd.read_csv(f)
+        ds = _infer_dataset(f.name)
+        df = _ensure_dataset_column(df, ds)
+        _require_columns(df, required_cols, f)
+        frames.append(df)
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    combined.to_csv(out_path, index=False)
+    logger.info(f"✓ Wrote {out_path.name} ({len(combined)} rows)")
+    return combined
+
+
+def _build_combined_table_source(
+    output_dir: Path,
+    combined_perf: pd.DataFrame,
+    combined_stab: pd.DataFrame,
+    combined_sig: pd.DataFrame,
+) -> pd.DataFrame:
+    if combined_perf.empty:
+        logger.warning("combined_summary.csv is empty; skipping combined_table_source.csv")
+        return pd.DataFrame()
+
+    key_perf = ["dataset", "selector", "model", "k"]
+    _require_columns(combined_perf, key_perf, output_dir / "combined_summary.csv")
+
+    table_df = combined_perf.copy()
+
+    if not combined_stab.empty:
+        key_stab = ["dataset", "selector", "model", "k"]
+        _require_columns(combined_stab, key_stab, output_dir / "combined_stability_summary.csv")
+
+        stab_payload = combined_stab.copy()
+        if "n_runs" in stab_payload.columns:
+            stab_payload = stab_payload.rename(columns={"n_runs": "n_runs_stability"})
+
+        table_df = table_df.merge(stab_payload, on=key_stab, how="left", suffixes=("", "_stab"))
+
+    if not combined_sig.empty:
+        key_sig = ["dataset", "model", "k", "selector"]
+        _require_columns(combined_sig, key_sig, output_dir / "combined_statistical_significance.csv")
+        table_df = table_df.merge(combined_sig, on=key_sig, how="left", suffixes=("", "_sig"))
+
+        # Primary significance: paired t-test. Secondary: Wilcoxon.
+        if "best_mi" in table_df.columns:
+            table_df["is_best_mi_row"] = table_df["selector"].astype(str) == table_df["best_mi"].astype(str)
+        else:
+            table_df["is_best_mi_row"] = False
+
+        if "significant_ttest" in table_df.columns:
+            sig_t = table_df["significant_ttest"].astype("boolean").fillna(False).astype(bool)
+            table_df["is_significant_primary"] = sig_t
+        else:
+            table_df["is_significant_primary"] = False
+
+        if "significant_wilcoxon" in table_df.columns:
+            sig_w = table_df["significant_wilcoxon"].astype("boolean").fillna(False).astype(bool)
+            table_df["is_significant_secondary"] = sig_w
+        else:
+            table_df["is_significant_secondary"] = False
+
+    out_path = output_dir / "combined_table_source.csv"
+    table_df.to_csv(out_path, index=False)
+    logger.info(f"✓ Wrote {out_path.name} ({len(table_df)} rows)")
+    return table_df
+
+
+def combine_aggregated_outputs(output_dir: Path, datasets: Sequence[str] | None = None) -> None:
+    """Combine per-dataset aggregated outputs into consistent combined files."""
+    perf_files = _collect_per_dataset_files(output_dir, "_summary.csv", datasets=datasets)
+    # strict filter to avoid accidental inclusion of stability/significance files
+    perf_files = [
+        p for p in perf_files
+        if not p.name.endswith("_stability_summary.csv")
+        and not p.name.endswith("_statistical_significance.csv")
+    ]
+
+    stab_files = _collect_per_dataset_files(output_dir, "_stability_summary.csv", datasets=datasets)
+    sig_files = _collect_per_dataset_files(output_dir, "_statistical_significance.csv", datasets=datasets)
+
+    combined_perf = _combine_and_write(
+        perf_files,
+        output_dir / "combined_summary.csv",
+        required_cols=["dataset", "selector", "model", "k"],
+    )
+    combined_stab = _combine_and_write(
+        stab_files,
+        output_dir / "combined_stability_summary.csv",
+        required_cols=["dataset", "selector", "model", "k"],
+    )
+    combined_sig = _combine_and_write(
+        sig_files,
+        output_dir / "combined_statistical_significance.csv",
+        required_cols=["dataset", "model", "k", "selector"],
+    )
+
+    _build_combined_table_source(output_dir, combined_perf, combined_stab, combined_sig)
+
+
+def _aggregate_single_dataset(
+    dataset: str,
+    input_dir: Path,
+    output_dir: Path,
+    min_runs: int,
+    repo_root: Path,
+) -> Path:
+    logger.info(f"Dataset: {dataset}")
+    logger.info(f"Input directory: {input_dir}")
+    logger.info(f"Output directory: {output_dir}")
+    logger.info("")
+
+    # Load raw results
+    df = load_raw_results(input_dir, dataset)
+
+    # Check minimum runs requirement
+    if "run_id" not in df.columns:
+        raise ValueError("Missing required column 'run_id' in raw results")
+    n_runs = df["run_id"].nunique()
+    logger.info(f"Number of unique runs: {n_runs}")
+
+    if n_runs < min_runs:
+        raise ValueError(f"Insufficient runs: found {n_runs}, need at least {min_runs}")
+
+    # Display data summary
+    logger.info("")
+    logger.info("Data Summary:")
+    logger.info(f"  Selectors: {sorted(df['selector'].unique())}")
+    logger.info(f"  Models: {sorted(df['model'].unique())}")
+    logger.info(f"  K values: {sorted(df['k'].unique())}")
+    logger.info(f"  Runs: {sorted(df['run_id'].unique())}")
+    if "fold_id" in df.columns:
+        logger.info(f"  Folds per run: {df.groupby('run_id')['fold_id'].nunique().values}")
+    logger.info("")
+
+    # Aggregate performance metrics
+    logger.info("Aggregating performance metrics...")
+    summary_df = aggregate_performance_metrics(df)
+
+    summary_path = output_dir / f"{dataset}_summary.csv"
+    summary_df.to_csv(summary_path, index=False)
+    logger.info(f"✓ Saved performance summary: {summary_path.relative_to(repo_root)}")
+    logger.info(f"  Rows: {len(summary_df)}")
+
+    # Aggregate stability metrics (if present)
+    logger.info("")
+    logger.info("Aggregating stability metrics...")
+    stability_df = aggregate_stability_metrics(df)
+
+    if not stability_df.empty:
+        stability_path = output_dir / f"{dataset}_stability_summary.csv"
+        stability_df.to_csv(stability_path, index=False)
+        logger.info(f"✓ Saved stability summary: {stability_path.relative_to(repo_root)}")
+        logger.info(f"  Rows: {len(stability_df)}")
+    else:
+        logger.info("  (No stability metrics to aggregate)")
+
+    # Compute statistical significance testing
+    logger.info("")
+    logger.info("Computing statistical significance...")
+    sig_path = output_dir / f"{dataset}_statistical_significance.csv"
+    try:
+        sig_df = compute_statistical_significance(
+            df_folds=df,
+            metric_col="roc_auc",  # Default to ROC AUC for statistical tests
+            mi_selectors=["mi", "mrmr"],
+            p_value_threshold=0.05,
+            output_path=str(sig_path)
+        )
+        logger.info(f"✓ Saved statistical significance summary: {sig_path.relative_to(repo_root)}")
+        logger.info(f"  Rows: {len(sig_df)}")
+    except Exception as e:
+        logger.error(f"Failed to compute statistical significance: {e}")
+
+    # Print sample of results
+    logger.info("")
+    logger.info("Sample of aggregated results:")
+    logger.info("")
+
+    sample_metrics = ["accuracy_mean", "roc_auc_mean", "f1_mean"]
+    display_cols = ["selector", "model", "k", "n_runs"] + [
+        col for col in sample_metrics if col in summary_df.columns
+    ]
+
+    print(summary_df[display_cols].head(10).to_string(index=False))
+    logger.info("")
+
+    return summary_path
+
+
 def main():
     """Main execution function."""
     args = parse_args()
@@ -318,80 +619,46 @@ def main():
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Dataset: {args.dataset}")
-    logger.info(f"Input directory: {input_dir}")
-    logger.info(f"Output directory: {output_dir}")
-    logger.info("")
-
-    # Load raw results
     try:
-        df = load_raw_results(input_dir, args.dataset)
-    except FileNotFoundError as e:
+        datasets = _resolve_dataset_list(args, input_dir)
+
+        if not args.combine_only:
+            if not datasets:
+                raise ValueError("No datasets specified. Use --dataset, --datasets, or --all-datasets.")
+
+            logger.info(f"Datasets to aggregate: {datasets}")
+            logger.info("")
+
+            for i, ds in enumerate(datasets, start=1):
+                logger.info("-" * 80)
+                logger.info(f"[{i}/{len(datasets)}] Aggregating dataset: {ds}")
+                logger.info("-" * 80)
+                _aggregate_single_dataset(
+                    dataset=ds,
+                    input_dir=input_dir,
+                    output_dir=output_dir,
+                    min_runs=args.min_runs,
+                    repo_root=repo_root,
+                )
+                logger.info("")
+
+        logger.info("=" * 80)
+        logger.info("Combining aggregated outputs")
+        logger.info("=" * 80)
+        combine_aggregated_outputs(output_dir, datasets=datasets or None)
+
+    except (FileNotFoundError, ValueError) as e:
         logger.error(str(e))
         sys.exit(1)
 
-    # Check minimum runs requirement
-    n_runs = df["run_id"].nunique()
-    logger.info(f"Number of unique runs: {n_runs}")
-
-    if n_runs < args.min_runs:
-        logger.error(f"Insufficient runs: found {n_runs}, need at least {args.min_runs}")
-        logger.error("Run more experiments before aggregating.")
-        sys.exit(1)
-
-    # Display data summary
     logger.info("")
-    logger.info("Data Summary:")
-    logger.info(f"  Selectors: {sorted(df['selector'].unique())}")
-    logger.info(f"  Models: {sorted(df['model'].unique())}")
-    logger.info(f"  K values: {sorted(df['k'].unique())}")
-    logger.info(f"  Runs: {sorted(df['run_id'].unique())}")
-    logger.info(f"  Folds per run: {df.groupby('run_id')['fold_id'].nunique().values}")
-    logger.info("")
-
-    # Aggregate performance metrics
-    logger.info("Aggregating performance metrics...")
-    summary_df = aggregate_performance_metrics(df)
-
-    summary_path = output_dir / f"{args.dataset}_summary.csv"
-    summary_df.to_csv(summary_path, index=False)
-    logger.info(f"✓ Saved performance summary: {summary_path.relative_to(repo_root)}")
-    logger.info(f"  Rows: {len(summary_df)}")
-
-    # Aggregate stability metrics (if present)
-    logger.info("")
-    logger.info("Aggregating stability metrics...")
-    stability_df = aggregate_stability_metrics(df)
-
-    if not stability_df.empty:
-        stability_path = output_dir / f"{args.dataset}_stability_summary.csv"
-        stability_df.to_csv(stability_path, index=False)
-        logger.info(f"✓ Saved stability summary: {stability_path.relative_to(repo_root)}")
-        logger.info(f"  Rows: {len(stability_df)}")
-    else:
-        logger.info("  (No stability metrics to aggregate)")
-
-    # Print sample of results
-    logger.info("")
-    logger.info("Sample of aggregated results:")
-    logger.info("")
-
-    # Show a few representative rows
-    sample_metrics = ["accuracy_mean", "roc_auc_mean", "f1_mean"]
-    display_cols = ["selector", "model", "k", "n_runs"] + [
-        col for col in sample_metrics if col in summary_df.columns
-    ]
-
-    print(summary_df[display_cols].head(10).to_string(index=False))
-    logger.info("")
-
     logger.info("=" * 80)
     logger.info("Aggregation complete!")
     logger.info("=" * 80)
     logger.info("")
     logger.info("Next steps:")
-    logger.info(f"  - Generate plots: python plot_publication_figures.py --dataset {args.dataset}")
-    logger.info(f"  - View summary: {summary_path}")
+    logger.info(f"  - Generate plots: python plot_publication_figures.py --dataset <dataset>")
+    logger.info(f"  - Combined outputs in: {output_dir}")
     logger.info("")
 
 

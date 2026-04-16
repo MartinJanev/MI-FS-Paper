@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 import warnings
 import time
+import threading
+from contextlib import contextmanager
 
 import numpy as np
-import time
 
 from mi_fs_benchmark.config import ExperimentConfig
 from mi_fs_benchmark.experiment.cv.artifacts import load_all_folds, FoldArtifact
@@ -21,6 +21,108 @@ from mi_fs_benchmark.logging_utils import get_logger
 from mi_fs_benchmark.core.models import create_model
 
 logger = get_logger(__name__)
+NOISY_TQDM_SELECTORS = {"boruta", "shap"}
+
+
+def _is_noisy_tqdm_selector(selector_name: str) -> bool:
+    return selector_name.lower() in NOISY_TQDM_SELECTORS
+
+
+@contextmanager
+def _selector_warning_filters():
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Features .* are constant", category=UserWarning)
+        warnings.filterwarnings("ignore", message="invalid value encountered in divide", category=RuntimeWarning)
+        warnings.filterwarnings("ignore", message="'penalty' was deprecated.*", category=FutureWarning)
+        warnings.filterwarnings("ignore", message="Inconsistent values: penalty=.*", category=UserWarning)
+        warnings.filterwarnings(
+            "ignore",
+            message="LightGBM binary classifier with TreeExplainer shap values output has changed to a list of ndarray",
+            category=UserWarning,
+        )
+        yield
+
+
+@contextmanager
+def periodic_logger(selector_name: str, fold_id: int, interval: int = 50, enabled: bool = True):
+    """Emit a simple periodic heartbeat while a blocking selector fit is running."""
+    if (not enabled) or interval <= 0:
+        yield
+        return
+
+    stop_event = threading.Event()
+
+    def log_periodic():
+        start_time = time.time()
+        while not stop_event.wait(interval):
+            elapsed = time.time() - start_time
+            logger.info(
+                "Still fitting selector='%s' fold=%s (elapsed: %.0fs)",
+                selector_name,
+                fold_id,
+                elapsed,
+            )
+
+    thread = threading.Thread(target=log_periodic, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        thread.join()
+
+
+@contextmanager
+def selector_fit_tracker(
+        selector_name: str,
+        fold_id: int,
+        *,
+        interval: int,
+        enabled: bool,
+        show_progress: bool,
+):
+    """Use a quieter in-place tqdm heartbeat for expensive noisy selectors."""
+    if (not enabled) or interval <= 0:
+        yield
+        return
+
+    if _is_noisy_tqdm_selector(selector_name) and show_progress:
+        ticker = _tqdm(
+            None,
+            total=0,
+            leave=False,
+            dynamic_ncols=True,
+            bar_format="{desc}",
+            desc=f"fit {selector_name} fold={fold_id}",
+        )
+        if ticker is not None:
+            stop_event = threading.Event()
+
+            def tick() -> None:
+                start_time = time.time()
+                while not stop_event.wait(interval):
+                    elapsed = int(time.time() - start_time)
+                    try:
+                        ticker.set_description_str(f"fit {selector_name} fold={fold_id} elapsed={elapsed}s")
+                        ticker.refresh()
+                    except Exception:
+                        return
+
+            thread = threading.Thread(target=tick, daemon=True)
+            thread.start()
+            try:
+                yield
+            finally:
+                stop_event.set()
+                thread.join()
+                try:
+                    ticker.close()
+                except Exception:
+                    pass
+            return
+
+    with periodic_logger(selector_name, fold_id, interval=interval, enabled=enabled):
+        yield
 
 
 @dataclass
@@ -32,14 +134,16 @@ class CVResult:
     run_id: int = 0  # Seed or run identifier for multi-run experiments
 
 
-def _tqdm(iterable, **kwargs):
+def _tqdm(iterable=None, **kwargs):
     """Local tqdm wrapper (keeps tqdm optional and avoids import cost when off)."""
     try:
         from tqdm import tqdm  # type: ignore
 
+        if iterable is None:
+            return tqdm(**kwargs)
         return tqdm(iterable, **kwargs)
     except Exception:
-        return iterable
+        return None if iterable is None else iterable
 
 
 def _run_fold_worker(args):
@@ -75,7 +179,6 @@ def _run_fold_worker(args):
         selector_kwargs["use_gpu_approximation"] = use_gpu
         selector_kwargs["device"] = device
 
-
     selector = create_selector(selector_name, **selector_kwargs)
 
     selector_start = time.time()
@@ -83,11 +186,7 @@ def _run_fold_worker(args):
         X_fit, y_fit = _subsample_rows_for_selector(X_train, y_train, max_rows_fit, seed, fold_id)
     else:
         X_fit, y_fit = X_train, y_train
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="Features .* are constant", category=UserWarning)
-        warnings.filterwarnings("ignore", message="invalid value encountered in divide", category=RuntimeWarning)
-        warnings.filterwarnings("ignore", message="'penalty' was deprecated.*", category=FutureWarning)
-        warnings.filterwarnings("ignore", message="Inconsistent values: penalty=.*", category=UserWarning)
+    with _selector_warning_filters():
         selector.fit(X_fit, y_fit)
     eff_k = min(k, X_train.shape[1])
     if eff_k < k:
@@ -129,11 +228,11 @@ def _run_fold_worker(args):
 
 
 def _cap_features_by_variance(
-    X_train: np.ndarray,
-    X_test: np.ndarray,
-    mi_lookup: Optional[np.ndarray],
-    feature_names: list[str],
-    cap: int,
+        X_train: np.ndarray,
+        X_test: np.ndarray,
+        mi_lookup: Optional[np.ndarray],
+        feature_names: list[str],
+        cap: int,
 ):
     if cap is None or cap <= 0 or X_train.shape[1] <= cap:
         return X_train, X_test, mi_lookup, feature_names
@@ -147,11 +246,11 @@ def _cap_features_by_variance(
 
 
 def _subsample_rows_for_selector(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    max_rows: Optional[int],
-    seed: int,
-    fold_id: int,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        max_rows: Optional[int],
+        seed: int,
+        fold_id: int,
 ):
     if max_rows is None or X_train.shape[0] <= max_rows:
         return X_train, y_train
@@ -161,10 +260,10 @@ def _subsample_rows_for_selector(
 
 
 def _drop_constant_features(
-    X_train: np.ndarray,
-    X_test: np.ndarray,
-    mi_lookup: Optional[np.ndarray],
-    feature_names: list[str],
+        X_train: np.ndarray,
+        X_test: np.ndarray,
+        mi_lookup: Optional[np.ndarray],
+        feature_names: list[str],
 ):
     """Remove zero-variance columns to avoid downstream selector warnings."""
     if X_train.size == 0:
@@ -178,6 +277,12 @@ def _drop_constant_features(
     mi_c = mi_lookup[mask] if mi_lookup is not None else None
     names_c = [feature_names[i] for i, keep in enumerate(mask) if keep] if feature_names else []
     return X_train_c, X_test_c, mi_c, names_c
+
+def _format_duration_mm_ss(seconds: float) -> str:
+        total_seconds = max(0, int(seconds))
+        minutes, secs = divmod(total_seconds, 60)
+        return f"{minutes}m {secs:02d}s"
+
 
 
 class CVRunner:
@@ -201,7 +306,8 @@ class CVRunner:
         - aggregate stability statistics.
     """
 
-    def __init__(self, cfg: ExperimentConfig, *, show_progress: bool = True, n_jobs: int = 1, use_gpu: bool = False, device: str = "cpu", run_id: int = 0) -> None:
+    def __init__(self, cfg: ExperimentConfig, *, show_progress: bool = True, n_jobs: int = 1, use_gpu: bool = False,
+                 device: str = "cpu", run_id: int = 0) -> None:
         self.cfg = cfg
         self.show_progress = bool(show_progress)
         self.n_jobs = n_jobs if n_jobs > 0 else os.cpu_count()
@@ -264,10 +370,10 @@ class CVRunner:
             )
 
         total = (
-            len(self.cfg.selectors)
-            * len(self.cfg.models)
-            * len(self.cfg.k_values)
-            * len(folds)
+                len(self.cfg.selectors)
+                * len(self.cfg.models)
+                * len(self.cfg.k_values)
+                * len(folds)
         )
 
         # One global progress bar across all folds/combos
@@ -286,7 +392,8 @@ class CVRunner:
         fold_data_list = []
         processed_folds: list[FoldArtifact] = []
         for fold in folds:
-            Xtr, Xte, mi_lu, fnames = fold.X_train_disc, fold.X_test_disc, fold.mi_lookup, getattr(fold, "feature_names", [])
+            Xtr, Xte, mi_lu, fnames = fold.X_train_disc, fold.X_test_disc, fold.mi_lookup, getattr(fold,
+                                                                                                   "feature_names", [])
             Xtr, Xte, mi_lu, fnames = _drop_constant_features(Xtr, Xte, mi_lu, fnames)
             if self.cfg.max_features_after_encoding is not None:
                 Xtr, Xte, mi_lu, fnames = _cap_features_by_variance(
@@ -336,11 +443,11 @@ class CVRunner:
             # Estimate memory per fold (in MB)
             sample_fold = fold_data_list[0]
             memory_per_fold_mb = (
-                sample_fold["X_train"].nbytes +
-                sample_fold["X_test"].nbytes +
-                sample_fold["y_train"].nbytes +
-                sample_fold["y_test"].nbytes
-            ) / (1024 ** 2)
+                                         sample_fold["X_train"].nbytes +
+                                         sample_fold["X_test"].nbytes +
+                                         sample_fold["y_train"].nbytes +
+                                         sample_fold["y_test"].nbytes
+                                 ) / (1024 ** 2)
 
             # Conservative threshold: 500 MB per fold for safe multiprocessing
             # This accounts for pickling overhead and process memory duplication
@@ -411,11 +518,7 @@ class CVRunner:
 
             selector = create_selector(selector_name, **selector_kwargs)
 
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message="Features .* are constant", category=UserWarning)
-                warnings.filterwarnings("ignore", message="invalid value encountered in divide", category=RuntimeWarning)
-                warnings.filterwarnings("ignore", message="'penalty' was deprecated.*", category=FutureWarning)
-                warnings.filterwarnings("ignore", message="Inconsistent values: penalty=.*", category=UserWarning)
+            with _selector_warning_filters():
                 sel_start = time.time()
                 if self.cfg.max_rows_for_selector_fit is not None:
                     X_fit, y_fit = _subsample_rows_for_selector(
@@ -423,10 +526,25 @@ class CVRunner:
                     )
                 else:
                     X_fit, y_fit = X_train, y_train
-                selector.fit(X_fit, y_fit)
+
+                with selector_fit_tracker(
+                        selector_name=selector_name,
+                        fold_id=fold.fold_id,
+                        interval=int(self.cfg.selector_fit_progress_interval_sec),
+                        enabled=bool(self.cfg.selector_fit_progress_enabled),
+                        show_progress=self.show_progress,
+                ):
+                    selector.fit(X_fit, y_fit)
+
                 # Request full ranking by selecting all features
                 feature_idx = selector.select_k(X_train.shape[1])
                 fit_time_selector = time.time() - sel_start
+                logger.info(
+                    "Completed selector='%s' fold=%s in %s",
+                    selector_name,
+                    fold.fold_id,
+                    _format_duration_mm_ss(fit_time_selector),
+                )
 
             rankings[fold.fold_id] = {
                 "feature_idx": feature_idx,
@@ -549,12 +667,12 @@ class CVRunner:
         return fold_scores, selected_sets
 
     def _run_single_fold(
-        self,
-        selector_name: str,
-        model_name: str,
-        k: int,
-        fold,
-        selector_rankings=None,
+            self,
+            selector_name: str,
+            model_name: str,
+            k: int,
+            fold,
+            selector_rankings=None,
     ) -> Tuple[Dict[str, Any], list[int]]:
         """
         Run a single fold evaluation.
@@ -599,8 +717,9 @@ class CVRunner:
 
         # Add GPU parameters for MI and MRMR selectors
         selector_lower = selector_name.lower()
-        if selector_lower in ["mi", "mutual_information", "mrmr"]:
+        if selector_lower in ["mi", "mutual_information", "mrmr", "boruta", "shap"]:
             selector_kwargs["use_gpu_approximation"] = self.use_gpu
+            selector_kwargs["use_gpu"] = self.use_gpu
             selector_kwargs["device"] = self.device
 
         selector = create_selector(selector_name, **selector_kwargs)
@@ -617,13 +736,16 @@ class CVRunner:
             feature_idx = feature_idx_full[:eff_k]
             fit_time_selector = cached.get("fit_time_selector", 0.0)
         else:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message="Features .* are constant", category=UserWarning)
-                warnings.filterwarnings("ignore", message="invalid value encountered in divide", category=RuntimeWarning)
-                warnings.filterwarnings("ignore", message="'penalty' was deprecated.*", category=FutureWarning)
-                warnings.filterwarnings("ignore", message="Inconsistent values: penalty=.*", category=UserWarning)
+            with _selector_warning_filters():
                 sel_start = time.time()
-                selector.fit(X_train, y_train)
+                with selector_fit_tracker(
+                        selector_name=selector_name,
+                        fold_id=fold.fold_id,
+                        interval=int(self.cfg.selector_fit_progress_interval_sec),
+                        enabled=bool(self.cfg.selector_fit_progress_enabled),
+                        show_progress=self.show_progress,
+                ):
+                    selector.fit(X_train, y_train)
                 feature_idx = selector.select_k(eff_k)
                 fit_time_selector = time.time() - sel_start
 

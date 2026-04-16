@@ -51,22 +51,6 @@ class PipelineRunner:
         """
         cfg = self.config.experiment_config
 
-        # Display GPU information if GPU is enabled
-        if self.config.use_gpu:
-            try:
-                from mi_fs_benchmark.core.fs.mi_gpu import get_gpu_info
-                gpu_info = get_gpu_info()
-                logger.info("=" * 70)
-                logger.info("🎮 GPU ACCELERATION ENABLED")
-                logger.info(f"   Device: {self.config.device}")
-                logger.info(f"   GPU: {gpu_info['device_name']}")
-                logger.info(f"   CUDA Cores: {gpu_info['cuda_cores']}")
-                logger.info(f"   Memory: {gpu_info['memory_total']:.1f} GB total, {gpu_info['memory_available']:.1f} GB available")
-                logger.info(f"   Compute Capability: {gpu_info['compute_capability']}")
-                logger.info("=" * 70)
-            except Exception as e:
-                logger.warning(f"⚠️  Could not retrieve GPU info: {e}")
-
         logger.info("🚀 Starting experiment...")
 
         # Force sequential when GPU is requested to avoid multi-process GPU contention

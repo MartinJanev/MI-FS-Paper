@@ -12,6 +12,8 @@ selectors:
   - tree_importance
   - mi
   - mrmr
+  - boruta
+  - shap
 
 models:
   - logreg
@@ -23,3 +25,4 @@ cv_outer_folds: 5
 cv_repeats: 1
 seed: 236040
 tracking_uri: "mlruns"
+max_rows_for_selector_fit: 100000

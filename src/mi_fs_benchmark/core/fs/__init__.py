@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import inspect
-import numpy as np
 from dataclasses import dataclass
+
+import numpy as np
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 from sklearn.ensemble import RandomForestClassifier
 
@@ -194,7 +195,6 @@ class L1LogRegSelector(FeatureSelector):
 
 @dataclass
 class TreeImportanceSelector(FeatureSelector):
-
     n_estimators: int = 200
     max_depth: int | None = None
     random_state: int | None = None
@@ -218,6 +218,82 @@ class TreeImportanceSelector(FeatureSelector):
         return np.argsort(self._importances)[::-1]
 
 
+@dataclass
+class BorutaSelector(FeatureSelector):
+    n_estimators: int | str = "auto"
+    random_state: int | None = None
+    use_gpu: bool = False  # Allows configuration from runner
+    device: str = "cpu"  # Allows configuration from runner
+    _ranks: np.ndarray | None = None
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> "FeatureSelector":
+        from boruta import BorutaPy
+        from xgboost import XGBClassifier
+
+        # Only use GPU if requested and available
+        xgb_device = "cuda" if self.use_gpu else "cpu"
+
+        rf = XGBClassifier(
+            n_estimators=100,
+            max_depth=5,
+            tree_method="hist",
+            device=xgb_device,
+            random_state=self.random_state,
+            n_jobs=-1 if not self.use_gpu else 1  # Avoid CPU thread contention on GPU
+        )
+
+        boruta_sel = BorutaPy(rf, n_estimators=self.n_estimators, random_state=self.random_state)
+        boruta_sel.fit(X, y)
+        self._ranks = boruta_sel.ranking_
+        return self
+
+    def rank_features(self) -> np.ndarray:
+        if self._ranks is None:
+            raise RuntimeError("BorutaSelector not fitted.")
+        # Lower rank (1) is better for Boruta
+        return np.argsort(self._ranks)
+
+
+@dataclass
+class ShapSelector(FeatureSelector):
+    random_state: int | None = None
+    use_gpu: bool = False
+    device: str = "cpu"
+    _importances: np.ndarray | None = None
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> "FeatureSelector":
+        import shap
+        import lightgbm as lgb
+
+        lgb_params = {
+            "random_state": self.random_state,
+            "n_jobs": -1 if not self.use_gpu else 1,
+            "verbose": -1
+        }
+
+        if self.use_gpu:
+            lgb_params["device"] = "gpu"
+
+        clf = lgb.LGBMClassifier(**lgb_params)
+        clf.fit(X, y)
+
+        explainer = shap.TreeExplainer(clf)
+        shap_values = explainer.shap_values(X)
+
+        if isinstance(shap_values, list):
+            importance = np.abs(shap_values[1]).mean(axis=0)
+        else:
+            importance = np.abs(shap_values).mean(axis=0)
+
+        self._importances = importance
+        return self
+
+    def rank_features(self) -> np.ndarray:
+        if self._importances is None:
+            raise RuntimeError("ShapSelector not fitted.")
+        # Higher SHAP values are better
+        return np.argsort(self._importances)[::-1]
+
 def create_selector(name: str, **kwargs) -> FeatureSelector:
     """
     Factory for feature selection strategies.
@@ -240,6 +316,8 @@ def create_selector(name: str, **kwargs) -> FeatureSelector:
         "variance": VarianceSelector,
         "l1_logreg": L1LogRegSelector,
         "tree_importance": TreeImportanceSelector,
+        "boruta": BorutaSelector,
+        "shap": ShapSelector,
     }
     try:
         cls = mapping[name]
@@ -262,4 +340,6 @@ __all__ = [
     "VarianceSelector",
     "L1LogRegSelector",
     "TreeImportanceSelector",
+    "BorutaSelector",
+    "ShapSelector",
 ]

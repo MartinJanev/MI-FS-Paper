@@ -124,66 +124,6 @@ def validate_experiment_setup(
         # Fold artifacts are self-contained, no further validation needed
         return ValidationResult(True, errors, warnings, info)
 
-    try:
-        df_sample = pd.read_parquet(train_path, engine="pyarrow")
-        n_rows = len(df_sample)
-        info["train_n_rows"] = n_rows
-        if n_rows == 0:
-            warnings.append(f"train.parquet has 0 rows: {train_path}")
-    except Exception as e:
-        warnings.append(f"Could not determine row count for {train_path}: {e}")
-
-    # Check 6: Target column exists
-    target_col = cfg.dataset.target_column
-    if target_col not in columns:
-        errors.append(
-            f"Target column '{target_col}' not found in {train_path}.\n"
-            f"Available columns (first 30): {columns[:30]}\n"
-            f"Fix: update dataset.target_column in {config_path.name} or regenerate data."
-        )
-        return ValidationResult(False, errors, warnings, info)
-
-    info["target_column"] = target_col
-
-    # Check 7: ID column exists (if specified)
-    id_col = cfg.dataset.id_column
-    if id_col is not None:
-        if id_col not in columns:
-            warnings.append(
-                f"ID column '{id_col}' specified but not found in {train_path}. "
-                f"This may cause issues if the dataset loader expects it."
-            )
-        else:
-            info["id_column"] = id_col
-
-    # Check 8: test.parquet (optional)
-    if check_test_data:
-        test_path = dataset_root / "test.parquet"
-        if not test_path.exists():
-            warnings.append(f"test.parquet not found at {test_path}")
-        else:
-            try:
-                test_columns = _get_parquet_columns(test_path)
-                info["test_columns"] = test_columns
-                info["test_n_columns"] = len(test_columns)
-            except Exception as e:
-                warnings.append(f"Could not read test.parquet schema: {e}")
-
-    # Check 9: Validate selectors and models
-    info["selectors"] = cfg.selectors
-    info["models"] = cfg.models
-    info["k_values"] = cfg.k_values
-    info["cv_outer_folds"] = cfg.cv_outer_folds
-    info["seed"] = cfg.seed
-
-    # Success
-    return ValidationResult(
-        is_valid=True,
-        errors=errors,
-        warnings=warnings,
-        info=info,
-    )
-
 
 def validate_or_exit(config_path: Path, check_test_data: bool = False) -> ExperimentConfig:
     """

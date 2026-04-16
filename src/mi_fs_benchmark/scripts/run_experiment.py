@@ -12,7 +12,7 @@ Usage:
     2. Run: python run_multi_seed_experiment.py
 
     OR use command-line arguments (ADVANCED):
-    python run_multi_seed_experiment.py --config santander_short.yaml --n-runs 10
+    python run_multi_seed_experiment.py --config santander.yaml --n-runs 10
 
 Output:
     - results/raw/{dataset}_seed{N}.csv for each run
@@ -21,10 +21,21 @@ Output:
 
 from __future__ import annotations
 
+import argparse
 import sys
+import time
+from dataclasses import replace
 from pathlib import Path
-# For Google Colab compatibility
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
+
+
+def _ensure_src_on_path() -> None:
+    """Add repository src/ once for script execution contexts (local + Colab)."""
+    src_path = str(Path(__file__).resolve().parents[3] / "src")
+    if src_path not in sys.path:
+        sys.path.insert(0, src_path)
+
+
+_ensure_src_on_path()
 
 # =============================================================================
 # CONFIGURATION - Edit these variables for easy usage
@@ -41,11 +52,6 @@ START_SEED: int | None = None         # Starting seed (None = use config seed)
 # =============================================================================
 # Advanced: You can leave the rest as-is
 # =============================================================================
-
-import argparse
-import sys
-import time
-from pathlib import Path
 
 from mi_fs_benchmark.logging_utils import get_logger, setup_logging
 from mi_fs_benchmark.experiment.pipeline import PipelineRunner, validate_experiment_setup
@@ -133,7 +139,6 @@ def main():
 
     # Setup repository paths
     repo_root = Path(__file__).resolve().parents[3]
-    sys.path.insert(0, str(repo_root / "src"))
 
     setup_logging()
 
@@ -237,7 +242,6 @@ def main():
         logger.info("━" * 80)
 
         # Update config with current seed
-        from dataclasses import replace
         cfg_run = replace(cfg, seed=run_seed)
 
         # Define output path for this run
