@@ -6,6 +6,7 @@ import numpy as np
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
+    confusion_matrix,
     f1_score,
     log_loss,
     roc_auc_score,
@@ -36,6 +37,16 @@ def compute_all(
     metrics["pr_auc"] = float(average_precision_score(y_true, y_proba))
     metrics["f1"] = float(f1_score(y_true, y_pred))
     metrics["log_loss"] = float(log_loss(y_true, y_proba))
+
+    # Keep fold-level confusion counts so low-F1 behavior can be inspected directly.
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    metrics["tn"] = int(tn)
+    metrics["fp"] = int(fp)
+    metrics["fn"] = int(fn)
+    metrics["tp"] = int(tp)
+
+    denom = (2 * tp) + fp + fn
+    metrics["f1_from_confusion"] = float((2 * tp) / denom) if denom > 0 else 0.0
 
     return metrics
 
