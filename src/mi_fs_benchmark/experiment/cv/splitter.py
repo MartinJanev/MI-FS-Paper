@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from mi_fs_benchmark.data.datasets.base import BaseDataset
+from mi_fs_benchmark.data_processing.datasets.base import BaseDataset
 
 
 def get_dataset_splits(
-    dataset: BaseDataset,
-    fold_scheme: str,
-    n_splits: int,
-    seed: int,
+        dataset: BaseDataset,
+        n_splits: int,
+        seed: int,
 ):
     """
     Adapter for different split schemes.

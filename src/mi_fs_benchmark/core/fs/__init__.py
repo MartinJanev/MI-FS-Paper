@@ -222,8 +222,8 @@ class TreeImportanceSelector(FeatureSelector):
 class BorutaSelector(FeatureSelector):
     n_estimators: int | str = "auto"
     random_state: int | None = None
-    use_gpu: bool = False  # Allows configuration from runner
-    device: str = "cpu"  # Allows configuration from runner
+    use_gpu: bool = False
+    device: str = "cpu"
     _ranks: np.ndarray | None = None
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "FeatureSelector":

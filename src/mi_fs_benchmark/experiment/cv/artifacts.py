@@ -200,7 +200,7 @@ def generate_fold_artifacts(
     """
     from sklearn.model_selection import StratifiedKFold
     from sklearn.preprocessing import StandardScaler
-    from mi_fs_benchmark.data.preprocessing import compute_mi_lookup, discretize_features
+    from mi_fs_benchmark.data_processing.preprocessing import compute_mi_lookup, discretize_features
 
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
 
@@ -357,7 +357,7 @@ def generate_fold_artifacts_fast(
         Generated fold artifacts.
     """
     from sklearn.preprocessing import StandardScaler
-    from mi_fs_benchmark.data.preprocessing import compute_mi_lookup, discretize_features
+    from mi_fs_benchmark.data_processing.preprocessing import compute_mi_lookup, discretize_features
 
     artifacts = []
     for fold_id, (train_idx, test_idx) in enumerate(fold_indices):
@@ -368,7 +368,7 @@ def generate_fold_artifacts_fast(
 
         # Standardize and discretize features (GPU-accelerated if enabled)
         if use_gpu:
-            from mi_fs_benchmark.data.preprocessing.discretize_gpu import (
+            from mi_fs_benchmark.data_processing.preprocessing.discretize_gpu import (
                 standardize_features_gpu,
                 discretize_features_gpu
             )

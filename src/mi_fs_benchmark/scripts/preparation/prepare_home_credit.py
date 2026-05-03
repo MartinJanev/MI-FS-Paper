@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from mi_fs_benchmark.experiment.cv.artifacts import FoldArtifact
 from mi_fs_benchmark.logging_utils import get_logger, setup_logging
-from mi_fs_benchmark.data.preprocessing import compute_mi_lookup, discretize_features
+from mi_fs_benchmark.data_processing.preprocessing import compute_mi_lookup, discretize_features
 
 logger = get_logger(__name__)
 

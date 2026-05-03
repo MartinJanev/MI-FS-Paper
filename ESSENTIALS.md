@@ -1,62 +1,60 @@
 # MI-FS Essentials
 
-A compact guide to run the benchmark and understand the code flow.
+Short version: prepare the data, run the experiment, aggregate the CSVs, then make plots/tables.
 
-## 1) What this project does
-
-Benchmark feature selectors (MI and baselines) across datasets, models, and feature counts (`k`) using multi-seed cross-validation, then aggregate and plot publication-ready results.
-
-## 2) Minimal run sequence
+## Fast start
 
 ```powershell
-# 1. Run experiments
-python src/mi_fs_benchmark/scripts/run_multi_seed_experiment.py
+# 1) Install once
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e .
 
-# 2. Aggregate results
-python src/mi_fs_benchmark/scripts/aggregate_results.py --dataset santander_short
+# 2) Prepare a dataset once
+python src/mi_fs_benchmark/scripts/preparation/prepare_home_credit.py
 
-# 3. Generate plots/tables
-python src/mi_fs_benchmark/scripts/make_paper_plots.py
+# 3) Run the benchmark
+python src/mi_fs_benchmark/scripts/run_experiment.py --config src/configs/home_credit.yaml --n-runs 10 --no-gpu
+
+# 4) Aggregate results
+python src/mi_fs_benchmark/scripts/aggregate_results.py --dataset home_credit
+
+# 5) Generate paper figures/tables
+python src/mi_fs_benchmark/scripts/make_paper_plots.py --root . --outdir paper_figs
 ```
 
-## 3) Required inputs
+## Inputs you need
 
-- Processed data in `src/data/processed/{dataset}/`
-- Experiment config in `src/configs/*.yaml`
-- Python environment with required dependencies
+- Raw source files in `src/data/raw/<dataset>/` before preprocessing
+- Santander, Home Credit, and IEEE-CIS Fraud come from Kaggle competition downloads
+- Arcene uses the ARCENE benchmark files in `src/data/raw/arcene/`
+- Processed folds in `src/data/processed/<dataset>/` are created by the preparation scripts
+- A config from `src/configs/`
+- A working Python environment
 
-## 4) Core configuration knobs
+## Main outputs
 
-In YAML configs:
-- `selectors`: feature selection methods
-- `models`: downstream estimators
-- `k_values`: selected-feature sweep
-- CV parameters: folds/seeds/splits
+- Raw CSVs: `src/results/raw/`
+- Aggregated summaries: `src/results/aggregated/`
+- Figures and tables: `paper_figs/` and `final_plots/`
 
-In run script/CLI:
-- dataset config (`--config`)
-- number of runs/seeds (`--n-runs`)
-- device options (if enabled in your setup)
+## What the visuals mean
 
-## 5) Key outputs
+- Shaded plot bands show confidence intervals around the mean, usually 95% CI.
+- A `*` in the reviewer table means the selector is flagged by the primary paired t-test against the best baseline in the generated significance file.
+- Confusion matrices are displayed as `TP` top-left, `FN` top-right, `FP` bottom-left, `TN` bottom-right.
 
-- Raw run results: `src/results/raw/`
-- Aggregated metrics: `src/results/aggregated/`
-- Figures and LaTeX tables: `paper_figs/` and/or `final_plots/`
+## If you are changing the code
 
-## 6) Pipeline map
+The flow is:
 
-1. `data/datasets/`: load + standardize datasets
-2. `data/preprocessing/`: preprocess and MI-related precompute/caching
-3. `core/fs/`: fit selector and rank/select top-`k` features
-4. `core/models/`: train downstream model
-5. `experiment/eval/`: compute metrics + stability
-6. `scripts/aggregate_results.py`: summarize across runs
-7. `scripts/make_paper_plots.py`: render figures/tables
+1. `src/mi_fs_benchmark/scripts/preparation/` prepares folds.
+2. `src/mi_fs_benchmark/core/fs/` ranks/selects features.
+3. `src/mi_fs_benchmark/core/models/` trains the downstream model.
+4. `src/mi_fs_benchmark/experiment/` computes metrics, stability, and significance.
+5. `src/mi_fs_benchmark/scripts/aggregate_results.py` merges runs.
+6. `src/mi_fs_benchmark/scripts/make_paper_plots.py` and `make_paper_plots_2.py` render figures and tables.
 
-## 7) Runtime behavior to remember
+## Reminder
 
-- Experiments may switch parallel/sequential CV based on memory/size settings.
-- Stability metrics (e.g., Jaccard/Kuncheva) complement predictive metrics.
-- Aggregation reports mean/std and confidence intervals for comparisons.
-
+If a score looks strange, check the raw fold-level CSVs first. That is also where you start if you need evidence for a very low F1 value.
